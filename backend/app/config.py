@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     model_base_url: str = ""
     model_api_key: str = ""
     model_name: str = ""
+    model_bypass_proxy: bool = False
+    model_timeout_seconds: int = 60
 
     model_config = SettingsConfigDict(
         env_file=ROOT_DIR / ".env",
@@ -33,4 +35,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

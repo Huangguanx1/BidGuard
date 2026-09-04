@@ -1,9 +1,8 @@
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $forbiddenNames = @(".env", "bidguard.db")
-$files = Get-ChildItem $root -Recurse -File | Where-Object {
-    $_.FullName -notmatch '[\\/](node_modules|dist|data|\.git|\.venv)[\\/]'
-}
+$files = git -C $root -c core.quotepath=false ls-files --cached --others --exclude-standard |
+    ForEach-Object { Get-Item -LiteralPath (Join-Path $root $_) }
 
 $badNames = $files | Where-Object { $forbiddenNames -contains $_.Name }
 if ($badNames) {
@@ -18,4 +17,3 @@ if ($matches) {
 }
 
 Write-Output "PASS: no forbidden files or common API key patterns found."
-

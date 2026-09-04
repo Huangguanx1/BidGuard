@@ -11,8 +11,9 @@ from fastapi.responses import JSONResponse
 
 from .config import get_settings
 from .db import Database
+from .model import ModelError, check_model
 from .parser import ParseError, find_libreoffice, parse_document, validate_file
-from .schemas import BlockListResponse, DocumentSummary, HealthResponse
+from .schemas import BlockListResponse, DocumentSummary, HealthResponse, ModelCheckResponse
 
 
 class ApiError(Exception):
@@ -52,9 +53,24 @@ def health() -> HealthResponse:
         database="ok" if database.is_healthy() else "ok",
         sqlite_fts5=database.has_fts5(),
         libreoffice=find_libreoffice(settings) is not None,
-        model_configured=bool(settings.model_base_url and settings.model_name),
+        model_configured=bool(
+            settings.model_base_url and settings.model_api_key and settings.model_name
+        ),
         model_provider=settings.model_provider,
         model_name=settings.model_name or None,
+    )
+
+
+@app.post("/api/model/check", response_model=ModelCheckResponse)
+def model_check() -> ModelCheckResponse:
+    try:
+        reply = check_model(settings)
+    except ModelError as exc:
+        raise ApiError(502, "model_unavailable", str(exc)) from exc
+    return ModelCheckResponse(
+        provider=settings.model_provider,
+        model=settings.model_name,
+        reply=reply,
     )
 
 

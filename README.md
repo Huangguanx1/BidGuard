@@ -2,7 +2,7 @@
 
 招投标文件智能审查助手。项目使用 Vue 3、TypeScript、Vite、Element Plus、FastAPI、Pydantic、LangGraph 和 SQLite 构建，面向本地、单用户场景。
 
-> 当前进度：第一阶段——文件上传、结构解析、页码定位和 SQLite FTS5 检索。AI 审查工作流尚未接入。
+> 当前进度：第一阶段文件解析闭环已完成，并已加入 OpenAI Compatible 模型连通性检查。AI 审查工作流尚未接入。
 
 ## 功能范围
 
@@ -77,7 +77,7 @@ npm run dev
 
 ## 模型配置
 
-第二阶段将通过 `.env` 配置免费的 OpenAI Compatible API 或 Ollama。后续切换付费接口只修改 `MODEL_BASE_URL`、`MODEL_API_KEY` 和 `MODEL_NAME`，业务节点不绑定供应商。
+当前默认示例为兼容 OpenAI Chat Completions 的 `jiniu.ai`，模型名为 `gpt-5.4`。复制 `.env.example` 为 `.env`，仅在本地填写 `MODEL_API_KEY`，然后调用 `POST /api/model/check` 验证连通性。若本机代理无法连接该平台，可设置 `MODEL_BYPASS_PROXY=true` 仅让模型请求直连。后续切换接口只需修改模型配置。
 
 免费额度和可用模型可能随供应商政策变化，仓库不会内置、共享或代领 API Key。使用远程 API 时，候选文档片段会发送给对应服务；只有 Ollama 模式可视为完全本地处理。
 

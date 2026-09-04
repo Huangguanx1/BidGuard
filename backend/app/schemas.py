@@ -13,6 +13,13 @@ class HealthResponse(BaseModel):
     model_name: str | None
 
 
+class ModelCheckResponse(BaseModel):
+    ok: Literal[True] = True
+    provider: str
+    model: str
+    reply: str
+
+
 class DocumentSummary(BaseModel):
     id: str
     original_name: str
@@ -43,4 +50,3 @@ class DocumentBlock(BaseModel):
 class BlockListResponse(BaseModel):
     items: list[DocumentBlock]
     total: int
-
