@@ -64,6 +64,7 @@ class Evidence(BaseModel):
     block_id: str
     page_number: int | None
     excerpt: str
+    document_role: Literal["tender", "bid"] | None = None
 
 
 class RequirementCheck(BaseModel):
@@ -78,16 +79,37 @@ class RequirementCheck(BaseModel):
     confidence: float
 
 
+ConsistencyCategory: TypeAlias = Literal["amount", "date", "project_name", "duration"]
+
+
+class FindingDraft(BaseModel):
+    type: Literal["consistency"] = "consistency"
+    category: ConsistencyCategory
+    risk_level: Literal["high", "medium", "low"]
+    title: str
+    description: str
+    suggestion: str
+    evidence: list[Evidence] = Field(min_length=2)
+    confidence: float = Field(ge=0, le=1)
+
+
+class Finding(FindingDraft):
+    id: str
+    review_id: str
+    review_status: Literal["pending", "confirmed", "ignored", "modified"]
+
+
 class ReviewRunResponse(BaseModel):
     id: str
     name: str
     status: Literal["awaiting_review"]
-    current_stage: Literal["requirements_matched"]
+    current_stage: Literal["consistency_checked"]
     model_name: str
     input_tokens: int
     output_tokens: int
     requirements: list[Requirement]
     requirement_checks: list[RequirementCheck]
+    findings: list[Finding]
 
 
 class DocumentSummary(BaseModel):

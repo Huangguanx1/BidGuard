@@ -3,7 +3,7 @@ import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 
-from .schemas import DocumentBlock, DocumentSummary, Requirement, RequirementCheck
+from .schemas import DocumentBlock, DocumentSummary, Finding, Requirement, RequirementCheck
 
 
 SCHEMA = """
@@ -104,6 +104,29 @@ CREATE TABLE IF NOT EXISTS requirement_checks (
 
 CREATE INDEX IF NOT EXISTS idx_requirement_checks_review
 ON requirement_checks(review_id, requirement_id);
+
+CREATE TABLE IF NOT EXISTS findings (
+    id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    requirement_check_id TEXT REFERENCES requirement_checks(id) ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK (type IN ('requirement_risk', 'consistency')),
+    category TEXT NOT NULL,
+    risk_level TEXT NOT NULL CHECK (risk_level IN ('high', 'medium', 'low')),
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    suggestion TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+    review_status TEXT NOT NULL DEFAULT 'pending' CHECK (
+        review_status IN ('pending', 'confirmed', 'ignored', 'modified')
+    ),
+    reviewer_note TEXT,
+    override TEXT,
+    reviewed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_findings_review
+ON findings(review_id, risk_level, category);
 """
 
 
@@ -242,11 +265,33 @@ class Database:
                     check,
                 )
             connection.execute(
-                """UPDATE reviews SET status = 'awaiting_review',
-                    current_stage = 'requirements_matched',
+                """UPDATE reviews SET current_stage = 'requirements_matched',
                     input_tokens = input_tokens + ?, output_tokens = output_tokens + ?,
                     updated_at = ? WHERE id = ?""",
                 (input_tokens, output_tokens, updated_at, review_id),
+            )
+
+    def complete_consistency_check(
+        self, review_id: str, findings: Iterable[dict], updated_at: str
+    ) -> None:
+        with self.connect() as connection:
+            for finding in findings:
+                connection.execute(
+                    """INSERT INTO findings (
+                        id, review_id, requirement_check_id, type, category,
+                        risk_level, title, description, suggestion, evidence,
+                        confidence, review_status
+                    ) VALUES (
+                        :id, :review_id, NULL, :type, :category,
+                        :risk_level, :title, :description, :suggestion, :evidence,
+                        :confidence, 'pending'
+                    )""",
+                    finding,
+                )
+            connection.execute(
+                """UPDATE reviews SET status = 'awaiting_review',
+                    current_stage = 'consistency_checked', updated_at = ? WHERE id = ?""",
+                (updated_at, review_id),
             )
 
     def fail_review(self, review_id: str, message: str, updated_at: str) -> None:
@@ -285,6 +330,21 @@ class Database:
             for field in ("tender_evidence", "bid_evidence", "searched_block_ids"):
                 item[field] = json.loads(row[field])
             items.append(RequirementCheck(**item))
+        return items
+
+    def list_findings(self, review_id: str) -> list[Finding]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM findings WHERE review_id = ?
+                ORDER BY CASE risk_level WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+                rowid""",
+                (review_id,),
+            ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["evidence"] = json.loads(row["evidence"])
+            items.append(Finding(**item))
         return items
 
     def list_blocks(

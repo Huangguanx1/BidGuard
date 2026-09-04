@@ -29,6 +29,16 @@ export interface RequirementCheck {
   confidence: number
 }
 
+export interface Finding {
+  id: string
+  category: 'amount' | 'date' | 'project_name' | 'duration'
+  risk_level: 'high' | 'medium' | 'low'
+  title: string
+  description: string
+  suggestion: string
+  confidence: number
+}
+
 export interface ReviewRun {
   id: string
   model_name: string
@@ -36,6 +46,7 @@ export interface ReviewRun {
   output_tokens: number
   requirements: Requirement[]
   requirement_checks: RequirementCheck[]
+  findings: Finding[]
 }
 
 interface ApiErrorBody {

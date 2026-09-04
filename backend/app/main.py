@@ -20,6 +20,7 @@ from .model import (
     review_prompt_hash,
 )
 from .parser import ParseError, find_libreoffice, parse_document, validate_file
+from .rules import run_consistency_rules
 from .schemas import (
     BlockListResponse,
     DocumentSummary,
@@ -198,6 +199,20 @@ def create_review(body: ReviewCreate) -> ReviewRunResponse:
             match_output_tokens,
             datetime.now(UTC).isoformat(),
         )
+        finding_rows = [
+            {
+                "id": str(uuid4()),
+                "review_id": review_id,
+                **finding.model_dump(exclude={"evidence"}),
+                "evidence": json.dumps(
+                    [item.model_dump() for item in finding.evidence], ensure_ascii=False
+                ),
+            }
+            for finding in run_consistency_rules(blocks, bid_blocks)
+        ]
+        database.complete_consistency_check(
+            review_id, finding_rows, datetime.now(UTC).isoformat()
+        )
     except ModelError as exc:
         database.fail_review(review_id, str(exc), datetime.now(UTC).isoformat())
         raise ApiError(502, "review_run_failed", str(exc)) from exc
@@ -209,12 +224,13 @@ def create_review(body: ReviewCreate) -> ReviewRunResponse:
         id=review_id,
         name=review_name,
         status="awaiting_review",
-        current_stage="requirements_matched",
+        current_stage="consistency_checked",
         model_name=settings.model_name,
         input_tokens=input_tokens + match_input_tokens,
         output_tokens=output_tokens + match_output_tokens,
         requirements=database.list_requirements(review_id),
         requirement_checks=database.list_requirement_checks(review_id),
+        findings=database.list_findings(review_id),
     )
 
 

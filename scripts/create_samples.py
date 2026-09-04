@@ -25,11 +25,15 @@ def create_docx() -> None:
     document = Document()
     document.add_heading("星河市数字档案平台招标文件", level=1)
     document.add_paragraph("本文件中的单位、项目和数据均为虚构内容，仅用于软件演示。")
-    document.add_heading("一、资格审查", level=2)
+    document.add_heading("一、项目基本信息", level=2)
+    document.add_paragraph("项目名称：星河市数字档案平台。")
+    document.add_paragraph("投标截止日期：2026年10月15日。")
+    document.add_paragraph("最高投标限价：人民币900000元。")
+    document.add_heading("二、资格审查", level=2)
     document.add_paragraph("投标人须提供有效的营业执照复印件并加盖公章。")
-    document.add_heading("二、工期要求", level=2)
+    document.add_heading("三、工期要求", level=2)
     document.add_paragraph("项目建设工期不得超过150日历天。")
-    document.add_heading("三、评分标准", level=2)
+    document.add_heading("四、评分标准", level=2)
     table = document.add_table(rows=1, cols=3)
     table.style = "Table Grid"
     table.rows[0].cells[0].text = "评分项"
@@ -97,6 +101,9 @@ def main() -> None:
         SAMPLES / "fictional_tender.pdf",
         "星河市数字档案平台招标文件",
         [
+            "项目名称：星河市数字档案平台。",
+            "投标截止日期：2026年10月15日。",
+            "最高投标限价：人民币900000元。",
             "资格审查：投标人须提供有效的营业执照复印件并加盖公章。",
             "工期要求：项目建设工期不得超过150日历天。",
             "评分标准：实施方案内容完整、计划合理，满分20分。",
@@ -108,7 +115,8 @@ def main() -> None:
         "星云科技数字档案平台投标文件",
         [
             "本公司已提供有效营业执照复印件并加盖公章。",
-            "项目名称：星河市数字档案平台。",
+            "项目名称：星河市智慧档案平台。",
+            "投标截止日期：2026年10月16日。",
             "承诺建设工期为180日历天。",
             "投标报价为人民币980000元。",
         ],

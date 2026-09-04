@@ -54,6 +54,12 @@ if ($WithModel) {
     if (-not $timelineCheck -or $timelineCheck.match_status -eq "satisfied") {
         throw "Known 180-day versus 150-day conflict was not detected"
     }
+    $findingCategories = @($review.findings | ForEach-Object { $_.category })
+    if ($review.findings.Count -ne 4 -or "amount" -notin $findingCategories `
+        -or "date" -notin $findingCategories -or "project_name" -notin $findingCategories `
+        -or "duration" -notin $findingCategories) {
+        throw "Deterministic consistency findings check failed"
+    }
 }
 
 if ($health.libreoffice) {
@@ -85,4 +91,5 @@ if ($health.libreoffice) {
     LibreOfficeAvailable = $health.libreoffice
     ExtractedRequirements = if ($review) { $review.requirements.Count } else { "skipped" }
     MatchedRequirements = if ($review) { $review.requirement_checks.Count } else { "skipped" }
+    ConsistencyFindings = if ($review) { $review.findings.Count } else { "skipped" }
 } | Format-List

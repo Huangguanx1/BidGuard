@@ -27,6 +27,12 @@ const statusLabels = {
   not_found: '未找到',
   uncertain: '待确认',
 }
+const findingCategoryLabels = {
+  amount: '金额',
+  date: '日期',
+  project_name: '项目名称',
+  duration: '工期',
+}
 
 function checkFor(requirementId: string) {
   return review.value?.requirement_checks.find((item) => item.requirement_id === requirementId)
@@ -150,6 +156,28 @@ function formatBytes(bytes: number) {
         </el-table-column>
         <el-table-column label="判断理由" min-width="260">
           <template #default="scope">{{ checkFor(scope.row.id)?.reason }}</template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
+    <el-card v-if="review" class="requirements" shadow="never">
+      <template #header>
+        <strong>确定性矛盾（{{ review.findings.length }}）</strong>
+        <span>金额 · 日期 · 项目名称 · 工期</span>
+      </template>
+      <el-empty v-if="!review.findings.length" description="未发现明确矛盾" />
+      <el-table v-else :data="review.findings" stripe>
+        <el-table-column label="风险" width="80">
+          <template #default="scope"><el-tag type="danger">{{ scope.row.risk_level === 'high' ? '高' : '中' }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="类别" width="100">
+          <template #default="scope">{{ findingCategoryLabels[scope.row.category as keyof typeof findingCategoryLabels] }}</template>
+        </el-table-column>
+        <el-table-column prop="title" label="问题" min-width="170" />
+        <el-table-column prop="description" label="说明" min-width="280" />
+        <el-table-column prop="suggestion" label="整改建议" min-width="280" />
+        <el-table-column label="置信度" width="90">
+          <template #default="scope">{{ Math.round(scope.row.confidence * 100) }}%</template>
         </el-table-column>
       </el-table>
     </el-card>
