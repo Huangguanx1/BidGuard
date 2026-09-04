@@ -21,12 +21,21 @@ export interface Requirement {
   confidence: number
 }
 
-export interface ReviewExtraction {
+export interface RequirementCheck {
+  id: string
+  requirement_id: string
+  match_status: 'satisfied' | 'partial' | 'not_satisfied' | 'not_found' | 'uncertain'
+  reason: string
+  confidence: number
+}
+
+export interface ReviewRun {
   id: string
   model_name: string
   input_tokens: number
   output_tokens: number
   requirements: Requirement[]
+  requirement_checks: RequirementCheck[]
 }
 
 interface ApiErrorBody {
@@ -47,7 +56,7 @@ export async function uploadDocument(file: File): Promise<DocumentSummary> {
 export async function createReview(
   tenderDocumentId: string,
   bidDocumentId: string,
-): Promise<ReviewExtraction> {
+): Promise<ReviewRun> {
   const response = await fetch('/api/reviews', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -60,5 +69,5 @@ export async function createReview(
     const body = (await response.json().catch(() => ({}))) as ApiErrorBody
     throw new Error(body.detail || `AI 审查失败（HTTP ${response.status}）`)
   }
-  return response.json() as Promise<ReviewExtraction>
+  return response.json() as Promise<ReviewRun>
 }

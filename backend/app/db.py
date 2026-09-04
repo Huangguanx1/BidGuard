@@ -3,7 +3,7 @@ import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 
-from .schemas import DocumentBlock, DocumentSummary, Requirement
+from .schemas import DocumentBlock, DocumentSummary, Requirement, RequirementCheck
 
 
 SCHEMA = """
@@ -86,6 +86,24 @@ CREATE TABLE IF NOT EXISTS requirements (
 
 CREATE INDEX IF NOT EXISTS idx_requirements_review
 ON requirements(review_id, sort_index);
+
+CREATE TABLE IF NOT EXISTS requirement_checks (
+    id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    requirement_id TEXT NOT NULL REFERENCES requirements(id) ON DELETE CASCADE,
+    match_status TEXT NOT NULL CHECK (match_status IN (
+        'satisfied', 'partial', 'not_satisfied', 'not_found', 'uncertain'
+    )),
+    reason TEXT NOT NULL,
+    tender_evidence TEXT NOT NULL,
+    bid_evidence TEXT NOT NULL,
+    searched_block_ids TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+    UNIQUE(review_id, requirement_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_requirement_checks_review
+ON requirement_checks(review_id, requirement_id);
 """
 
 
@@ -198,9 +216,36 @@ class Database:
                     requirement,
                 )
             connection.execute(
-                """UPDATE reviews SET status = 'awaiting_review',
-                    current_stage = 'requirements_extracted', input_tokens = ?,
+                """UPDATE reviews SET current_stage = 'requirements_extracted', input_tokens = ?,
                     output_tokens = ?, updated_at = ? WHERE id = ?""",
+                (input_tokens, output_tokens, updated_at, review_id),
+            )
+
+    def complete_requirement_matching(
+        self,
+        review_id: str,
+        checks: Iterable[dict],
+        input_tokens: int,
+        output_tokens: int,
+        updated_at: str,
+    ) -> None:
+        with self.connect() as connection:
+            for check in checks:
+                connection.execute(
+                    """INSERT INTO requirement_checks (
+                        id, review_id, requirement_id, match_status, reason,
+                        tender_evidence, bid_evidence, searched_block_ids, confidence
+                    ) VALUES (
+                        :id, :review_id, :requirement_id, :match_status, :reason,
+                        :tender_evidence, :bid_evidence, :searched_block_ids, :confidence
+                    )""",
+                    check,
+                )
+            connection.execute(
+                """UPDATE reviews SET status = 'awaiting_review',
+                    current_stage = 'requirements_matched',
+                    input_tokens = input_tokens + ?, output_tokens = output_tokens + ?,
+                    updated_at = ? WHERE id = ?""",
                 (input_tokens, output_tokens, updated_at, review_id),
             )
 
@@ -225,6 +270,21 @@ class Database:
             item["mandatory"] = bool(row["mandatory"])
             item["source_block_ids"] = json.loads(row["source_block_ids"])
             items.append(Requirement(**item))
+        return items
+
+    def list_requirement_checks(self, review_id: str) -> list[RequirementCheck]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM requirement_checks WHERE review_id = ?
+                ORDER BY rowid""",
+                (review_id,),
+            ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            for field in ("tender_evidence", "bid_evidence", "searched_block_ids"):
+                item[field] = json.loads(row[field])
+            items.append(RequirementCheck(**item))
         return items
 
     def list_blocks(

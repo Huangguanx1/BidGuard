@@ -45,8 +45,14 @@ if ($WithModel) {
     $categories = @($review.requirements | ForEach-Object { $_.category })
     if ($review.status -ne "awaiting_review" -or $review.requirements.Count -lt 3 `
         -or "qualification" -notin $categories -or "timeline" -notin $categories `
-        -or "scoring" -notin $categories) {
+        -or "scoring" -notin $categories `
+        -or $review.requirement_checks.Count -ne $review.requirements.Count) {
         throw "AI requirement extraction check failed"
+    }
+    $timeline = $review.requirements | Where-Object category -eq "timeline" | Select-Object -First 1
+    $timelineCheck = $review.requirement_checks | Where-Object requirement_id -eq $timeline.id
+    if (-not $timelineCheck -or $timelineCheck.match_status -eq "satisfied") {
+        throw "Known 180-day versus 150-day conflict was not detected"
     }
 }
 
@@ -78,4 +84,5 @@ if ($health.libreoffice) {
     InvalidFileRejected = $invalidRejected
     LibreOfficeAvailable = $health.libreoffice
     ExtractedRequirements = if ($review) { $review.requirements.Count } else { "skipped" }
+    MatchedRequirements = if ($review) { $review.requirement_checks.Count } else { "skipped" }
 } | Format-List

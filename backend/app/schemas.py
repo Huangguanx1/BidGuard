@@ -47,15 +47,47 @@ class Requirement(RequirementDraft):
     source_excerpt: str
 
 
-class ReviewExtractionResponse(BaseModel):
+MatchStatus: TypeAlias = Literal[
+    "satisfied", "partial", "not_satisfied", "not_found", "uncertain"
+]
+
+
+class RequirementMatchDraft(BaseModel):
+    requirement_id: str
+    match_status: MatchStatus
+    reason: str = Field(min_length=1, max_length=1000)
+    bid_evidence_block_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+
+
+class Evidence(BaseModel):
+    block_id: str
+    page_number: int | None
+    excerpt: str
+
+
+class RequirementCheck(BaseModel):
+    id: str
+    review_id: str
+    requirement_id: str
+    match_status: MatchStatus
+    reason: str
+    tender_evidence: list[Evidence]
+    bid_evidence: list[Evidence]
+    searched_block_ids: list[str]
+    confidence: float
+
+
+class ReviewRunResponse(BaseModel):
     id: str
     name: str
     status: Literal["awaiting_review"]
-    current_stage: Literal["requirements_extracted"]
+    current_stage: Literal["requirements_matched"]
     model_name: str
     input_tokens: int
     output_tokens: int
     requirements: list[Requirement]
+    requirement_checks: list[RequirementCheck]
 
 
 class DocumentSummary(BaseModel):

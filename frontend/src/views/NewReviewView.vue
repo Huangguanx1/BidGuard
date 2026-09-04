@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { createReview, uploadDocument, type DocumentSummary, type ReviewExtraction } from '../api'
+import { createReview, uploadDocument, type DocumentSummary, type ReviewRun } from '../api'
 
 type Role = 'tender' | 'bid'
 
@@ -9,7 +9,7 @@ const files = ref<Record<Role, File | null>>({ tender: null, bid: null })
 const results = ref<Partial<Record<Role, DocumentSummary>>>({})
 const uploading = ref(false)
 const reviewing = ref(false)
-const review = ref<ReviewExtraction | null>(null)
+const review = ref<ReviewRun | null>(null)
 const canUpload = computed(() => files.value.tender && files.value.bid && !uploading.value)
 const canReview = computed(() => results.value.tender && results.value.bid && !reviewing.value)
 
@@ -19,6 +19,23 @@ const categoryLabels = {
   scoring: '评分标准',
   timeline: '时间节点',
   materials: '材料要求',
+}
+const statusLabels = {
+  satisfied: '满足',
+  partial: '部分满足',
+  not_satisfied: '不满足',
+  not_found: '未找到',
+  uncertain: '待确认',
+}
+
+function checkFor(requirementId: string) {
+  return review.value?.requirement_checks.find((item) => item.requirement_id === requirementId)
+}
+
+function statusType(status: keyof typeof statusLabels) {
+  if (status === 'satisfied') return 'success'
+  if (status === 'partial' || status === 'uncertain') return 'warning'
+  return 'danger'
 }
 
 function chooseFile(role: Role, event: Event) {
@@ -33,7 +50,7 @@ async function startReview() {
   reviewing.value = true
   try {
     review.value = await createReview(results.value.tender.id, results.value.bid.id)
-    ElMessage.success(`已提取 ${review.value.requirements.length} 条招标要求`)
+    ElMessage.success(`已完成 ${review.value.requirements.length} 条要求匹配`)
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : 'AI 审查失败')
   } finally {
@@ -123,6 +140,16 @@ function formatBytes(bytes: number) {
         </el-table-column>
         <el-table-column label="置信度" width="90">
           <template #default="scope">{{ Math.round(scope.row.confidence * 100) }}%</template>
+        </el-table-column>
+        <el-table-column label="匹配" width="110">
+          <template #default="scope">
+            <el-tag :type="statusType(checkFor(scope.row.id)!.match_status)">
+              {{ statusLabels[checkFor(scope.row.id)!.match_status] }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="判断理由" min-width="260">
+          <template #default="scope">{{ checkFor(scope.row.id)?.reason }}</template>
         </el-table-column>
       </el-table>
     </el-card>
