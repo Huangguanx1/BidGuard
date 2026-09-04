@@ -2,14 +2,15 @@
 
 招投标文件智能审查助手。项目使用 Vue 3、TypeScript、Vite、Element Plus、FastAPI、Pydantic、LangGraph 和 SQLite 构建，面向本地、单用户场景。
 
-> 当前进度：第一阶段文件解析闭环已完成，并已加入 OpenAI Compatible 模型连通性检查。AI 审查工作流尚未接入。
+> 当前进度：文件解析闭环和招标要求 AI 提取已完成。投标匹配、矛盾检查及 LangGraph 工作流尚未接入。
 
 ## 功能范围
 
 - 上传 DOCX 和文本型 PDF；拒绝扫描 PDF、加密 PDF 和不可信文件格式。
 - 提取标题、段落、表格、标题路径和页码。
 - 使用 SQLite FTS5 检索相关文档块及相邻上下文。
-- 后续阶段将完成要求提取、逐项匹配、一致性检查、人工复核、报告和固定评测集。
+- 通过可替换的 OpenAI Compatible 接口分批提取五类招标要求，保存证据块、置信度、模型与 Token 用量。
+- 后续阶段将完成逐项匹配、一致性检查、人工复核、报告和固定评测集。
 
 不包含 OCR、多租户、Redis、Celery、微服务、云部署和无意义的多智能体包装。
 
@@ -22,7 +23,8 @@ Vue 3 + Element Plus
 FastAPI + Pydantic
         ├── DOCX：python-docx + LibreOffice 页码转换
         ├── PDF：PyMuPDF
-        └── SQLite + FTS5
+        ├── OpenAI Compatible API：结构化要求提取
+        └── SQLite + FTS5：文档、审查与要求
 ```
 
 ## 计划中的受控工作流
@@ -74,6 +76,7 @@ npm run dev
 ```
 
 冒烟脚本执行健康检查、上传两份虚构 PDF、查询解析结果并验证 FTS5 命中。DOCX 页码验证要求本机已安装 LibreOffice。
+需要同时验证付费模型要求提取时运行 `.\scripts\smoke.ps1 -WithModel`；该选项会产生一次真实模型调用。
 
 ## 模型配置
 

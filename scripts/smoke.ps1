@@ -1,4 +1,7 @@
-param([string]$BaseUrl = "http://127.0.0.1:8000")
+param(
+    [string]$BaseUrl = "http://127.0.0.1:8000",
+    [switch]$WithModel
+)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -31,6 +34,22 @@ try {
 }
 if (-not $invalidRejected) { throw "Unsupported file was not rejected" }
 
+$review = $null
+if ($WithModel) {
+    if (-not $health.model_configured) { throw "Model is not configured" }
+    $review = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/reviews" `
+        -ContentType "application/json" -Body (@{
+            tender_document_id = $tender.id
+            bid_document_id = $bid.id
+        } | ConvertTo-Json)
+    $categories = @($review.requirements | ForEach-Object { $_.category })
+    if ($review.status -ne "awaiting_review" -or $review.requirements.Count -lt 3 `
+        -or "qualification" -notin $categories -or "timeline" -notin $categories `
+        -or "scoring" -notin $categories) {
+        throw "AI requirement extraction check failed"
+    }
+}
+
 if ($health.libreoffice) {
     $docx = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/documents" -Form @{
         file = Get-Item "$root/samples/fictional_tender.docx"
@@ -58,4 +77,5 @@ if ($health.libreoffice) {
     ShortChineseSearchHits = $shortQueryBlocks.total
     InvalidFileRejected = $invalidRejected
     LibreOfficeAvailable = $health.libreoffice
+    ExtractedRequirements = if ($review) { $review.requirements.Count } else { "skipped" }
 } | Format-List

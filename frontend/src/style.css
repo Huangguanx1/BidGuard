@@ -36,6 +36,8 @@ h1 { margin: 6px 0 12px; font-size: clamp(30px, 5vw, 48px); line-height: 1.15; }
 .summary-grid dt { color: #7b8495; font-size: 13px; }
 .summary-grid dd { margin: 4px 0 0; font-weight: 700; }
 .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+.requirements { margin-top: 24px; }
+.requirements .el-card__header { display: flex; justify-content: space-between; gap: 16px; color: #5b6475; }
 
 @media (max-width: 720px) {
   .app-header { padding-inline: 16px; }

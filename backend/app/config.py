@@ -19,7 +19,10 @@ class Settings(BaseSettings):
     model_api_key: str = ""
     model_name: str = ""
     model_bypass_proxy: bool = False
+    model_temperature: float = 0
     model_timeout_seconds: int = 60
+    model_max_retries: int = 2
+    model_batch_chars: int = 12_000
 
     model_config = SettingsConfigDict(
         env_file=ROOT_DIR / ".env",

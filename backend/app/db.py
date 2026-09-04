@@ -3,7 +3,7 @@ import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 
-from .schemas import DocumentBlock, DocumentSummary
+from .schemas import DocumentBlock, DocumentSummary, Requirement
 
 
 SCHEMA = """
@@ -48,6 +48,44 @@ CREATE VIRTUAL TABLE IF NOT EXISTS document_blocks_fts USING fts5(
     section_path,
     tokenize='trigram'
 );
+
+CREATE TABLE IF NOT EXISTS reviews (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    tender_document_id TEXT NOT NULL REFERENCES documents(id),
+    bid_document_id TEXT NOT NULL REFERENCES documents(id),
+    status TEXT NOT NULL CHECK (status IN ('running', 'awaiting_review', 'failed')),
+    current_stage TEXT NOT NULL,
+    model_provider TEXT NOT NULL,
+    model_base_url TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    prompt_hash TEXT NOT NULL,
+    model_parameters TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS requirements (
+    id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    category TEXT NOT NULL CHECK (category IN (
+        'qualification', 'disqualification', 'scoring', 'timeline', 'materials'
+    )),
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    sort_index INTEGER NOT NULL,
+    mandatory INTEGER NOT NULL CHECK (mandatory IN (0, 1)),
+    source_block_ids TEXT NOT NULL,
+    source_excerpt TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1)
+);
+
+CREATE INDEX IF NOT EXISTS idx_requirements_review
+ON requirements(review_id, sort_index);
 """
 
 
@@ -114,6 +152,80 @@ class Database:
                 "SELECT * FROM documents WHERE id = ?", (document_id,)
             ).fetchone()
         return self._summary(row) if row else None
+
+    def get_all_blocks(self, document_id: str) -> list[DocumentBlock]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM document_blocks WHERE document_id = ?
+                ORDER BY block_index""",
+                (document_id,),
+            ).fetchall()
+        return [self._block(row) for row in rows]
+
+    def insert_review(self, review: dict) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO reviews (
+                    id, name, tender_document_id, bid_document_id, status,
+                    current_stage, model_provider, model_base_url, model_name,
+                    prompt_version, prompt_hash, model_parameters, created_at, updated_at
+                ) VALUES (
+                    :id, :name, :tender_document_id, :bid_document_id, 'running',
+                    'extracting_requirements', :model_provider, :model_base_url, :model_name,
+                    :prompt_version, :prompt_hash, :model_parameters, :created_at, :created_at
+                )""",
+                review,
+            )
+
+    def complete_requirement_extraction(
+        self,
+        review_id: str,
+        requirements: Iterable[dict],
+        input_tokens: int,
+        output_tokens: int,
+        updated_at: str,
+    ) -> None:
+        with self.connect() as connection:
+            for requirement in requirements:
+                connection.execute(
+                    """INSERT INTO requirements (
+                        id, review_id, category, title, description, sort_index,
+                        mandatory, source_block_ids, source_excerpt, confidence
+                    ) VALUES (
+                        :id, :review_id, :category, :title, :description, :sort_index,
+                        :mandatory, :source_block_ids, :source_excerpt, :confidence
+                    )""",
+                    requirement,
+                )
+            connection.execute(
+                """UPDATE reviews SET status = 'awaiting_review',
+                    current_stage = 'requirements_extracted', input_tokens = ?,
+                    output_tokens = ?, updated_at = ? WHERE id = ?""",
+                (input_tokens, output_tokens, updated_at, review_id),
+            )
+
+    def fail_review(self, review_id: str, message: str, updated_at: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """UPDATE reviews SET status = 'failed', current_stage = 'failed',
+                error_message = ?, updated_at = ? WHERE id = ?""",
+                (message, updated_at, review_id),
+            )
+
+    def list_requirements(self, review_id: str) -> list[Requirement]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM requirements WHERE review_id = ?
+                ORDER BY sort_index, id""",
+                (review_id,),
+            ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["mandatory"] = bool(row["mandatory"])
+            item["source_block_ids"] = json.loads(row["source_block_ids"])
+            items.append(Requirement(**item))
+        return items
 
     def list_blocks(
         self,

@@ -11,9 +11,22 @@ from fastapi.responses import JSONResponse
 
 from .config import get_settings
 from .db import Database
-from .model import ModelError, check_model
+from .model import (
+    REQUIREMENTS_PROMPT_VERSION,
+    ModelError,
+    check_model,
+    extract_requirements,
+    requirements_prompt_hash,
+)
 from .parser import ParseError, find_libreoffice, parse_document, validate_file
-from .schemas import BlockListResponse, DocumentSummary, HealthResponse, ModelCheckResponse
+from .schemas import (
+    BlockListResponse,
+    DocumentSummary,
+    HealthResponse,
+    ModelCheckResponse,
+    ReviewCreate,
+    ReviewExtractionResponse,
+)
 
 
 class ApiError(Exception):
@@ -71,6 +84,82 @@ def model_check() -> ModelCheckResponse:
         provider=settings.model_provider,
         model=settings.model_name,
         reply=reply,
+    )
+
+
+@app.post("/api/reviews", response_model=ReviewExtractionResponse, status_code=201)
+def create_review(body: ReviewCreate) -> ReviewExtractionResponse:
+    if body.tender_document_id == body.bid_document_id:
+        raise ApiError(422, "documents_must_differ", "招标文件和投标文件不能相同")
+    tender = database.get_document(body.tender_document_id)
+    bid = database.get_document(body.bid_document_id)
+    if not tender or not bid:
+        raise ApiError(404, "document_not_found", "招标文件或投标文件不存在")
+
+    review_id = str(uuid4())
+    created_at = datetime.now(UTC).isoformat()
+    database.insert_review(
+        {
+            "id": review_id,
+            "name": body.name or f"{tender.original_name} / {bid.original_name}"[:100],
+            "tender_document_id": tender.id,
+            "bid_document_id": bid.id,
+            "model_provider": settings.model_provider,
+            "model_base_url": settings.model_base_url,
+            "model_name": settings.model_name,
+            "prompt_version": REQUIREMENTS_PROMPT_VERSION,
+            "prompt_hash": requirements_prompt_hash(),
+            "model_parameters": json.dumps(
+                {
+                    "temperature": settings.model_temperature,
+                    "batch_chars": settings.model_batch_chars,
+                }
+            ),
+            "created_at": created_at,
+        }
+    )
+    blocks = database.get_all_blocks(tender.id)
+    block_map = {block.id: block for block in blocks}
+    try:
+        drafts, input_tokens, output_tokens = extract_requirements(blocks, settings)
+        requirement_rows = []
+        for draft in drafts:
+            evidence = [block_map[block_id] for block_id in draft.source_block_ids]
+            requirement_rows.append(
+                {
+                    "id": str(uuid4()),
+                    "review_id": review_id,
+                    **draft.model_dump(),
+                    "sort_index": min(block.block_index for block in evidence),
+                    "mandatory": int(draft.mandatory),
+                    "source_block_ids": json.dumps(draft.source_block_ids),
+                    "source_excerpt": "\n".join(block.content for block in evidence)[:1000],
+                }
+            )
+        updated_at = datetime.now(UTC).isoformat()
+        database.complete_requirement_extraction(
+            review_id,
+            requirement_rows,
+            input_tokens,
+            output_tokens,
+            updated_at,
+        )
+    except ModelError as exc:
+        database.fail_review(review_id, str(exc), datetime.now(UTC).isoformat())
+        raise ApiError(502, "requirement_extraction_failed", str(exc)) from exc
+    except sqlite3.Error as exc:
+        database.fail_review(review_id, "要求保存失败", datetime.now(UTC).isoformat())
+        raise ApiError(500, "storage_failed", "要求保存失败") from exc
+
+    return ReviewExtractionResponse(
+        id=review_id,
+        name=body.name or f"{tender.original_name} / {bid.original_name}"[:100],
+        status="awaiting_review",
+        current_stage="requirements_extracted",
+        model_name=settings.model_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        requirements=database.list_requirements(review_id),
     )
 
 

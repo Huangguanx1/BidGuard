@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,44 @@ class ModelCheckResponse(BaseModel):
     provider: str
     model: str
     reply: str
+
+
+RequirementCategory: TypeAlias = Literal[
+    "qualification", "disqualification", "scoring", "timeline", "materials"
+]
+
+
+class ReviewCreate(BaseModel):
+    tender_document_id: str
+    bid_document_id: str
+    name: str | None = Field(default=None, max_length=100)
+
+
+class RequirementDraft(BaseModel):
+    category: RequirementCategory
+    title: str = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=1, max_length=1000)
+    mandatory: bool
+    source_block_ids: list[str] = Field(min_length=1)
+    confidence: float = Field(ge=0, le=1)
+
+
+class Requirement(RequirementDraft):
+    id: str
+    review_id: str
+    sort_index: int
+    source_excerpt: str
+
+
+class ReviewExtractionResponse(BaseModel):
+    id: str
+    name: str
+    status: Literal["awaiting_review"]
+    current_stage: Literal["requirements_extracted"]
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    requirements: list[Requirement]
 
 
 class DocumentSummary(BaseModel):
