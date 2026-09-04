@@ -84,20 +84,27 @@ function formatBytes(bytes: number) {
 </script>
 
 <template>
-  <section class="page">
+  <section class="page review-page">
     <header class="page-title">
-      <p class="eyebrow">第一步</p>
-      <h1>上传并解析文件</h1>
-      <p>仅支持 DOCX 和文本型 PDF，单个文件不超过 20 MB。</p>
+      <div class="page-title-row">
+        <div>
+          <p class="eyebrow">新建审查 · 01</p>
+          <h1>上传并解析文件</h1>
+        </div>
+        <el-tag type="info" effect="plain">本地处理</el-tag>
+      </div>
+      <p>先上传一份招标文件和一份投标文件，系统会识别结构并准备后续匹配。</p>
     </header>
 
     <div class="upload-grid">
-      <el-card v-for="role in (['tender', 'bid'] as Role[])" :key="role" shadow="never">
+      <el-card v-for="role in (['tender', 'bid'] as Role[])" :key="role" class="upload-card" :class="`upload-card--${role}`" shadow="never">
         <template #header>
-          <strong>{{ role === 'tender' ? '招标文件' : '投标文件' }}</strong>
+          <div class="card-heading"><strong>{{ role === 'tender' ? '招标文件' : '投标文件' }}</strong><el-tag v-if="results[role]" type="success" effect="plain" size="small">解析完成</el-tag></div>
         </template>
-        <label class="file-field">
-          <span>选择 DOCX 或 PDF</span>
+        <label class="file-field dropzone">
+          <span class="dropzone__badge">{{ role === 'tender' ? 'T' : 'B' }}</span>
+          <span class="dropzone__title">选择{{ role === 'tender' ? '招标' : '投标' }}文件</span>
+          <span class="dropzone__hint">拖入或点击上传 · DOCX / 文本型 PDF</span>
           <input accept=".docx,.pdf" type="file" @change="chooseFile(role, $event)" />
         </label>
         <p v-if="files[role]" class="selected-file">{{ files[role]?.name }}</p>
@@ -130,7 +137,7 @@ function formatBytes(bytes: number) {
       </el-button>
     </div>
 
-    <el-card v-if="review" class="requirements" shadow="never">
+    <el-card v-if="review" class="requirements results-card" shadow="never">
       <template #header>
         <strong>招标要求（{{ review.requirements.length }}）</strong>
         <span>模型：{{ review.model_name }} · Token：{{ review.input_tokens + review.output_tokens }}</span>
@@ -160,7 +167,7 @@ function formatBytes(bytes: number) {
       </el-table>
     </el-card>
 
-    <el-card v-if="review" class="requirements" shadow="never">
+    <el-card v-if="review" class="requirements results-card" shadow="never">
       <template #header>
         <strong>确定性矛盾（{{ review.findings.length }}）</strong>
         <span>金额 · 日期 · 项目名称 · 工期</span>
