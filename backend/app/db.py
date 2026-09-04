@@ -3,7 +3,14 @@ import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 
-from .schemas import DocumentBlock, DocumentSummary, Finding, Requirement, RequirementCheck
+from .schemas import (
+    DocumentBlock,
+    DocumentSummary,
+    Finding,
+    Requirement,
+    RequirementCheck,
+    ReviewHistoryItem,
+)
 
 
 SCHEMA = """
@@ -301,6 +308,26 @@ class Database:
                 error_message = ?, updated_at = ? WHERE id = ?""",
                 (message, updated_at, review_id),
             )
+
+    def list_reviews(self, offset: int = 0, limit: int = 20) -> tuple[list[ReviewHistoryItem], int]:
+        with self.connect() as connection:
+            total = connection.execute("SELECT count(*) FROM reviews").fetchone()[0]
+            rows = connection.execute(
+                """SELECT r.*, td.original_name AS tender_file_name,
+                    bd.original_name AS bid_file_name,
+                    count(f.id) AS finding_count,
+                    coalesce(sum(CASE WHEN f.risk_level = 'high' THEN 1 ELSE 0 END), 0)
+                        AS high_risk_count
+                FROM reviews r
+                JOIN documents td ON td.id = r.tender_document_id
+                JOIN documents bd ON bd.id = r.bid_document_id
+                LEFT JOIN findings f ON f.review_id = r.id
+                GROUP BY r.id
+                ORDER BY r.created_at DESC
+                LIMIT ? OFFSET ?""",
+                (limit, offset),
+            ).fetchall()
+        return [ReviewHistoryItem(**dict(row)) for row in rows], total
 
     def list_requirements(self, review_id: str) -> list[Requirement]:
         with self.connect() as connection:

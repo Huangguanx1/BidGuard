@@ -13,7 +13,7 @@ import { RouterLink, RouterView } from 'vue-router'
         </div>
       </div>
       <nav aria-label="主导航">
-        <RouterLink to="/">审查历史</RouterLink>
+        <RouterLink to="/reviews">审查历史</RouterLink>
         <RouterLink class="nav-primary" to="/reviews/new">新建审查</RouterLink>
       </nav>
     </el-header>

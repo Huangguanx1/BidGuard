@@ -49,6 +49,23 @@ export interface ReviewRun {
   findings: Finding[]
 }
 
+export interface ReviewHistoryItem {
+  id: string
+  name: string
+  status: 'running' | 'awaiting_review' | 'failed'
+  current_stage: string
+  model_name: string
+  input_tokens: number
+  output_tokens: number
+  finding_count: number
+  high_risk_count: number
+  created_at: string
+  updated_at: string
+  tender_file_name: string
+  bid_file_name: string
+  error_message?: string | null
+}
+
 interface ApiErrorBody {
   detail?: string
 }
@@ -81,4 +98,10 @@ export async function createReview(
     throw new Error(body.detail || `AI 审查失败（HTTP ${response.status}）`)
   }
   return response.json() as Promise<ReviewRun>
+}
+
+export async function listReviews(): Promise<{ items: ReviewHistoryItem[]; total: number }> {
+  const response = await fetch('/api/reviews')
+  if (!response.ok) throw new Error(`获取审查历史失败（HTTP ${response.status}）`)
+  return response.json() as Promise<{ items: ReviewHistoryItem[]; total: number }>
 }

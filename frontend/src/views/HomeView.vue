@@ -9,7 +9,7 @@
         </p>
         <div class="hero-actions">
           <el-button type="primary" size="large" tag="router-link" to="/reviews/new">新建审查</el-button>
-          <el-button size="large" plain tag="router-link" to="/reviews/new">查看流程</el-button>
+          <el-button size="large" plain tag="router-link" to="/workflow">查看流程</el-button>
         </div>
       </div>
 

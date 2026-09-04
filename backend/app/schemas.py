@@ -112,6 +112,28 @@ class ReviewRunResponse(BaseModel):
     findings: list[Finding]
 
 
+class ReviewHistoryItem(BaseModel):
+    id: str
+    name: str
+    status: Literal["running", "awaiting_review", "failed"]
+    current_stage: str
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    finding_count: int
+    high_risk_count: int
+    created_at: str
+    updated_at: str
+    tender_file_name: str
+    bid_file_name: str
+    error_message: str | None = None
+
+
+class ReviewHistoryResponse(BaseModel):
+    items: list[ReviewHistoryItem]
+    total: int
+
+
 class DocumentSummary(BaseModel):
     id: str
     original_name: str

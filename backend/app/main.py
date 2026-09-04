@@ -27,6 +27,7 @@ from .schemas import (
     HealthResponse,
     ModelCheckResponse,
     ReviewCreate,
+    ReviewHistoryResponse,
     ReviewRunResponse,
 )
 
@@ -232,6 +233,15 @@ def create_review(body: ReviewCreate) -> ReviewRunResponse:
         requirement_checks=database.list_requirement_checks(review_id),
         findings=database.list_findings(review_id),
     )
+
+
+@app.get("/api/reviews", response_model=ReviewHistoryResponse)
+def list_reviews(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> ReviewHistoryResponse:
+    items, total = database.list_reviews(offset, limit)
+    return ReviewHistoryResponse(items=items, total=total)
 
 
 @app.post("/api/documents", response_model=DocumentSummary, status_code=201)
