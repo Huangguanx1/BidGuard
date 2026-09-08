@@ -41,7 +41,14 @@ if ($WithModel) {
         -ContentType "application/json" -Body (@{
             tender_document_id = $tender.id
             bid_document_id = $bid.id
+            external_processing_consent = $true
         } | ConvertTo-Json)
+    $deadline = (Get-Date).AddMinutes(10)
+    while ($review.status -in @('queued', 'running')) {
+        if ((Get-Date) -gt $deadline) { throw 'Review timed out' }
+        Start-Sleep -Seconds 2
+        $review = Invoke-RestMethod "$BaseUrl/api/reviews/$($review.id)"
+    }
     $categories = @($review.requirements | ForEach-Object { $_.category })
     if ($review.status -ne "awaiting_review" -or $review.requirements.Count -lt 3 `
         -or "qualification" -notin $categories -or "timeline" -notin $categories `
@@ -55,11 +62,26 @@ if ($WithModel) {
         throw "Known 180-day versus 150-day conflict was not detected"
     }
     $findingCategories = @($review.findings | ForEach-Object { $_.category })
-    if ($review.findings.Count -ne 4 -or "amount" -notin $findingCategories `
+    if (@($review.findings | Where-Object type -eq 'consistency').Count -ne 4 -or "amount" -notin $findingCategories `
         -or "date" -notin $findingCategories -or "project_name" -notin $findingCategories `
         -or "duration" -notin $findingCategories) {
         throw "Deterministic consistency findings check failed"
     }
+    $blocked = $false
+    try { Invoke-RestMethod -Method Post "$BaseUrl/api/reviews/$($review.id)/finalize" | Out-Null }
+    catch { $blocked = [int]$_.Exception.Response.StatusCode -eq 409 }
+    if (-not $blocked) { throw 'Pending findings did not block finalization' }
+    foreach ($finding in $review.findings) {
+        Invoke-RestMethod -Method Patch "$BaseUrl/api/findings/$($finding.id)" -ContentType 'application/json' -Body '{"review_status":"confirmed","reviewer_note":"虚构样本接口验证"}' | Out-Null
+    }
+    $review = Invoke-RestMethod -Method Post "$BaseUrl/api/reviews/$($review.id)/finalize"
+    if ($review.status -ne 'completed') { throw 'Review was not frozen' }
+    $report = Invoke-RestMethod "$BaseUrl/api/reviews/$($review.id)/report?format=json"
+    if ($report.summary.active_findings -ne $review.findings.Count) { throw 'Frozen report mismatch' }
+    $frozen = $false
+    try { Invoke-RestMethod -Method Patch "$BaseUrl/api/findings/$($review.findings[0].id)" -ContentType 'application/json' -Body '{"review_status":"ignored"}' | Out-Null }
+    catch { $frozen = [int]$_.Exception.Response.StatusCode -eq 409 }
+    if (-not $frozen) { throw 'Completed review accepted edits' }
 }
 
 if ($health.libreoffice) {

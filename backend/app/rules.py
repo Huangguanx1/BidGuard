@@ -150,7 +150,7 @@ def _finding(
 ) -> FindingDraft:
     return FindingDraft(
         category=category,
-        risk_level="high",
+        risk_level="medium" if category == "date" else "high",
         title=title,
         description=description,
         suggestion=suggestion,
@@ -165,4 +165,5 @@ def _evidence(block: DocumentBlock, role: str) -> Evidence:
         page_number=block.page_number,
         excerpt=block.content[:500],
         document_role=role,
+        location_confidence=block.location_confidence,
     )

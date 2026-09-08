@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import UTC, datetime
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -61,7 +62,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     name TEXT NOT NULL,
     tender_document_id TEXT NOT NULL REFERENCES documents(id),
     bid_document_id TEXT NOT NULL REFERENCES documents(id),
-    status TEXT NOT NULL CHECK (status IN ('running', 'awaiting_review', 'failed')),
+    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'awaiting_review', 'completed', 'failed')),
     current_stage TEXT NOT NULL,
     model_provider TEXT NOT NULL,
     model_base_url TEXT NOT NULL,
@@ -137,15 +138,49 @@ ON findings(review_id, risk_level, category);
 """
 
 
+class _Connection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 class Database:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        with self.connect() as connection:
+            definition = connection.execute("SELECT sql FROM sqlite_master WHERE name='reviews'").fetchone()[0]
+            if "'completed'" not in definition:
+                backup = self.path.with_suffix('.pre-workflow.bak')
+                if not backup.exists():
+                    with sqlite3.connect(backup) as destination:
+                        connection.backup(destination)
+                connection.execute('PRAGMA foreign_keys=OFF')
+                connection.execute('BEGIN IMMEDIATE')
+                new_sql = definition.replace('CREATE TABLE reviews', 'CREATE TABLE reviews_new').replace(
+                    "'running', 'awaiting_review', 'failed'", "'queued', 'running', 'awaiting_review', 'completed', 'failed'")
+                connection.execute(new_sql)
+                connection.execute('INSERT INTO reviews_new SELECT * FROM reviews')
+                connection.execute('DROP TABLE reviews')
+                connection.execute('ALTER TABLE reviews_new RENAME TO reviews')
+                connection.commit()
+                connection.execute('PRAGMA foreign_keys=ON')
+            columns = {row[1] for row in connection.execute('PRAGMA table_info(reviews)')}
+            for name, declaration in {'progress': 'INTEGER NOT NULL DEFAULT 0', 'run_attempt': 'INTEGER NOT NULL DEFAULT 1', 'report_snapshot': 'TEXT'}.items():
+                if name not in columns:
+                    connection.execute(f'ALTER TABLE reviews ADD COLUMN {name} {declaration}')
+            if connection.execute('PRAGMA foreign_key_check').fetchone():
+                raise RuntimeError('数据库外键检查失败')
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, timeout=30, factory=_Connection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
@@ -218,8 +253,8 @@ class Database:
                     current_stage, model_provider, model_base_url, model_name,
                     prompt_version, prompt_hash, model_parameters, created_at, updated_at
                 ) VALUES (
-                    :id, :name, :tender_document_id, :bid_document_id, 'running',
-                    'extracting_requirements', :model_provider, :model_base_url, :model_name,
+                    :id, :name, :tender_document_id, :bid_document_id, 'queued',
+                    'queued', :model_provider, :model_base_url, :model_name,
                     :prompt_version, :prompt_hash, :model_parameters, :created_at, :created_at
                 )""",
                 review,
@@ -234,6 +269,8 @@ class Database:
         updated_at: str,
     ) -> None:
         with self.connect() as connection:
+            if connection.execute('SELECT 1 FROM requirements WHERE review_id=?', (review_id,)).fetchone():
+                return
             for requirement in requirements:
                 connection.execute(
                     """INSERT INTO requirements (
@@ -260,6 +297,8 @@ class Database:
         updated_at: str,
     ) -> None:
         with self.connect() as connection:
+            if connection.execute('SELECT 1 FROM requirement_checks WHERE review_id=?', (review_id,)).fetchone():
+                return
             for check in checks:
                 connection.execute(
                     """INSERT INTO requirement_checks (
@@ -282,6 +321,8 @@ class Database:
         self, review_id: str, findings: Iterable[dict], updated_at: str
     ) -> None:
         with self.connect() as connection:
+            if connection.execute('SELECT 1 FROM findings WHERE review_id=?', (review_id,)).fetchone():
+                return
             for finding in findings:
                 connection.execute(
                     """INSERT INTO findings (
@@ -289,22 +330,22 @@ class Database:
                         risk_level, title, description, suggestion, evidence,
                         confidence, review_status
                     ) VALUES (
-                        :id, :review_id, NULL, :type, :category,
+                        :id, :review_id, :requirement_check_id, :type, :category,
                         :risk_level, :title, :description, :suggestion, :evidence,
                         :confidence, 'pending'
                     )""",
                     finding,
                 )
             connection.execute(
-                """UPDATE reviews SET status = 'awaiting_review',
-                    current_stage = 'consistency_checked', updated_at = ? WHERE id = ?""",
+                """UPDATE reviews SET current_stage = 'evidence_validated',
+                    progress = 90, updated_at = ? WHERE id = ?""",
                 (updated_at, review_id),
             )
 
     def fail_review(self, review_id: str, message: str, updated_at: str) -> None:
         with self.connect() as connection:
             connection.execute(
-                """UPDATE reviews SET status = 'failed', current_stage = 'failed',
+                """UPDATE reviews SET status = 'failed',
                 error_message = ?, updated_at = ? WHERE id = ?""",
                 (message, updated_at, review_id),
             )
@@ -316,7 +357,7 @@ class Database:
                 """SELECT r.*, td.original_name AS tender_file_name,
                     bd.original_name AS bid_file_name,
                     count(f.id) AS finding_count,
-                    coalesce(sum(CASE WHEN f.risk_level = 'high' THEN 1 ELSE 0 END), 0)
+                    coalesce(sum(CASE WHEN f.review_status != 'ignored' AND coalesce(json_extract(f.override, '$.risk_level'), f.risk_level) = 'high' THEN 1 ELSE 0 END), 0)
                         AS high_risk_count
                 FROM reviews r
                 JOIN documents td ON td.id = r.tender_document_id
@@ -371,8 +412,56 @@ class Database:
         for row in rows:
             item = dict(row)
             item["evidence"] = json.loads(row["evidence"])
+            item["override"] = json.loads(row["override"]) if row["override"] else None
             items.append(Finding(**item))
         return items
+
+    def get_review(self, review_id: str) -> dict | None:
+        with self.connect() as connection:
+            row = connection.execute('SELECT * FROM reviews WHERE id=?', (review_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_stage(self, review_id: str, stage: str, progress: int, status: str = 'running') -> None:
+        with self.connect() as connection:
+            connection.execute('UPDATE reviews SET current_stage=?, progress=?, status=?, updated_at=? WHERE id=?',
+                               (stage, progress, status, datetime.now(UTC).isoformat(), review_id))
+
+    def recover_interrupted(self) -> None:
+        with self.connect() as connection:
+            connection.execute("UPDATE reviews SET status='failed', error_message='服务中断，请从检查点重试', updated_at=? WHERE status IN ('queued','running')", (datetime.now(UTC).isoformat(),))
+
+    def claim_retry(self, review_id: str) -> bool:
+        with self.connect() as connection:
+            return connection.execute("UPDATE reviews SET status='queued', error_message=NULL, run_attempt=run_attempt+1, updated_at=? WHERE id=? AND status='failed'",
+                                      (datetime.now(UTC).isoformat(), review_id)).rowcount == 1
+
+    def update_finding(self, finding_id: str, update) -> str:
+        with self.connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT f.review_id, r.status FROM findings f JOIN reviews r ON r.id=f.review_id WHERE f.id=?', (finding_id,)).fetchone()
+            if not row:
+                raise LookupError('问题不存在')
+            if row['status'] != 'awaiting_review':
+                raise ValueError('仅待人工复核的审查允许修改')
+            connection.execute('UPDATE findings SET review_status=?, reviewer_note=?, override=?, reviewed_at=? WHERE id=?',
+                               (update.review_status, update.reviewer_note, update.override.model_dump_json() if update.override else None,
+                                datetime.now(UTC).isoformat(), finding_id))
+            connection.execute('UPDATE reviews SET updated_at=? WHERE id=?', (datetime.now(UTC).isoformat(), row['review_id']))
+        return row['review_id']
+
+    def freeze(self, review_id: str, snapshot_builder) -> None:
+        with self.connect() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT status FROM reviews WHERE id=?', (review_id,)).fetchone()
+            if row and row['status'] == 'completed':
+                return
+            if not row or row['status'] != 'awaiting_review':
+                raise ValueError('当前审查不能完成复核')
+            if connection.execute("SELECT 1 FROM findings WHERE review_id=? AND review_status='pending'", (review_id,)).fetchone():
+                raise ValueError('请先处理所有待确认问题')
+            snapshot = snapshot_builder()
+            connection.execute("UPDATE reviews SET status='completed', current_stage='completed', progress=100, report_snapshot=?, updated_at=? WHERE id=?",
+                               (json.dumps(snapshot, ensure_ascii=False), snapshot['completed_at'], review_id))
 
     def list_blocks(
         self,

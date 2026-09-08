@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { createReview, uploadDocument, type DocumentSummary, type ReviewRun } from '../api'
+import { api, createReview, uploadDocument, type DocumentSummary } from '../api'
 
 type Role = 'tender' | 'bid'
 
@@ -9,54 +10,25 @@ const files = ref<Record<Role, File | null>>({ tender: null, bid: null })
 const results = ref<Partial<Record<Role, DocumentSummary>>>({})
 const uploading = ref(false)
 const reviewing = ref(false)
-const review = ref<ReviewRun | null>(null)
+const router = useRouter()
+const consent = ref(false)
+const provider = ref('openai_compatible')
+onMounted(async () => { try { provider.value = (await api<{model_provider: string}>('/health')).model_provider } catch {} })
 const canUpload = computed(() => files.value.tender && files.value.bid && !uploading.value)
-const canReview = computed(() => results.value.tender && results.value.bid && !reviewing.value)
-
-const categoryLabels = {
-  qualification: '资格条件',
-  disqualification: '废标条款',
-  scoring: '评分标准',
-  timeline: '时间节点',
-  materials: '材料要求',
-}
-const statusLabels = {
-  satisfied: '满足',
-  partial: '部分满足',
-  not_satisfied: '不满足',
-  not_found: '未找到',
-  uncertain: '待确认',
-}
-const findingCategoryLabels = {
-  amount: '金额',
-  date: '日期',
-  project_name: '项目名称',
-  duration: '工期',
-}
-
-function checkFor(requirementId: string) {
-  return review.value?.requirement_checks.find((item) => item.requirement_id === requirementId)
-}
-
-function statusType(status: keyof typeof statusLabels) {
-  if (status === 'satisfied') return 'success'
-  if (status === 'partial' || status === 'uncertain') return 'warning'
-  return 'danger'
-}
+const canReview = computed(() => results.value.tender && results.value.bid && !reviewing.value && !uploading.value && (provider.value === 'ollama' || consent.value))
 
 function chooseFile(role: Role, event: Event) {
   const input = event.target as HTMLInputElement
   files.value[role] = input.files?.[0] ?? null
   delete results.value[role]
-  review.value = null
 }
 
 async function startReview() {
   if (!results.value.tender || !results.value.bid) return
   reviewing.value = true
   try {
-    review.value = await createReview(results.value.tender.id, results.value.bid.id)
-    ElMessage.success(`已完成 ${review.value.requirements.length} 条要求匹配`)
+    const review = await createReview(results.value.tender.id, results.value.bid.id, consent.value)
+    await router.push(`/reviews/${review.id}`)
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : 'AI 审查失败')
   } finally {
@@ -88,24 +60,29 @@ function formatBytes(bytes: number) {
     <header class="page-title">
       <div class="page-title-row">
         <div>
-          <p class="eyebrow">新建审查 · 01</p>
+
           <h1>上传并解析文件</h1>
         </div>
-        <el-tag type="info" effect="plain">本地处理</el-tag>
+        <el-tag type="info" effect="plain">文件在本机解析</el-tag>
       </div>
       <p>先上传一份招标文件和一份投标文件，系统会识别结构并准备后续匹配。</p>
     </header>
 
+    <ol class="upload-progress" aria-label="新建审查步骤">
+      <li :class="{active: !results.tender || !results.bid}"><span>1</span>上传并解析</li>
+      <li :class="{active: results.tender && results.bid}"><span>2</span>确认并开始审查</li>
+      <li><span>3</span>进入人工复核</li>
+    </ol>
     <div class="upload-grid">
       <el-card v-for="role in (['tender', 'bid'] as Role[])" :key="role" class="upload-card" :class="`upload-card--${role}`" shadow="never">
         <template #header>
           <div class="card-heading"><strong>{{ role === 'tender' ? '招标文件' : '投标文件' }}</strong><el-tag v-if="results[role]" type="success" effect="plain" size="small">解析完成</el-tag></div>
         </template>
         <label class="file-field dropzone">
-          <span class="dropzone__badge">{{ role === 'tender' ? 'T' : 'B' }}</span>
+          <span class="dropzone__badge" aria-hidden="true">{{ role === 'tender' ? '招' : '投' }}</span>
           <span class="dropzone__title">选择{{ role === 'tender' ? '招标' : '投标' }}文件</span>
-          <span class="dropzone__hint">拖入或点击上传 · DOCX / 文本型 PDF</span>
-          <input accept=".docx,.pdf" type="file" @change="chooseFile(role, $event)" />
+          <span class="dropzone__hint">点击选择文件 · DOCX / 文本型 PDF</span>
+          <input :aria-label="role === 'tender' ? '选择招标文件' : '选择投标文件'" :disabled="uploading || reviewing" accept=".docx,.pdf" type="file" @change="chooseFile(role, $event)" />
         </label>
         <p v-if="files[role]" class="selected-file">{{ files[role]?.name }}</p>
 
@@ -128,65 +105,16 @@ function formatBytes(bytes: number) {
       </el-card>
     </div>
 
+    <el-alert v-if="provider !== 'ollama'" title="AI 审查将把候选文档片段发送给你配置的外部模型服务。请确认有权发送这些文件。" type="warning" :closable="false" show-icon />
+    <el-checkbox v-if="provider !== 'ollama'" v-model="consent">我已了解并同意发送候选文档片段</el-checkbox>
     <div class="actions">
-      <el-button type="primary" size="large" :disabled="!canUpload" :loading="uploading" @click="parseFiles">
+      <el-button :type="results.tender && results.bid ? 'default' : 'primary'" size="large" :disabled="!canUpload" :loading="uploading" @click="parseFiles">
         上传并解析
       </el-button>
-      <el-button size="large" :disabled="!canReview" :loading="reviewing" @click="startReview">
+      <el-button :type="results.tender && results.bid ? 'primary' : 'default'" size="large" :disabled="!canReview" :loading="reviewing" @click="startReview">
         开始 AI 审查
       </el-button>
     </div>
 
-    <el-card v-if="review" class="requirements results-card" shadow="never">
-      <template #header>
-        <strong>招标要求（{{ review.requirements.length }}）</strong>
-        <span>模型：{{ review.model_name }} · Token：{{ review.input_tokens + review.output_tokens }}</span>
-      </template>
-      <el-table :data="review.requirements" stripe>
-        <el-table-column label="类别" width="110">
-          <template #default="scope">{{ categoryLabels[scope.row.category as keyof typeof categoryLabels] }}</template>
-        </el-table-column>
-        <el-table-column prop="title" label="要求" min-width="150" />
-        <el-table-column prop="description" label="说明" min-width="260" />
-        <el-table-column label="强制" width="80">
-          <template #default="scope">{{ scope.row.mandatory ? '是' : '否' }}</template>
-        </el-table-column>
-        <el-table-column label="置信度" width="90">
-          <template #default="scope">{{ Math.round(scope.row.confidence * 100) }}%</template>
-        </el-table-column>
-        <el-table-column label="匹配" width="110">
-          <template #default="scope">
-            <el-tag :type="statusType(checkFor(scope.row.id)!.match_status)">
-              {{ statusLabels[checkFor(scope.row.id)!.match_status] }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="判断理由" min-width="260">
-          <template #default="scope">{{ checkFor(scope.row.id)?.reason }}</template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-
-    <el-card v-if="review" class="requirements results-card" shadow="never">
-      <template #header>
-        <strong>确定性矛盾（{{ review.findings.length }}）</strong>
-        <span>金额 · 日期 · 项目名称 · 工期</span>
-      </template>
-      <el-empty v-if="!review.findings.length" description="未发现明确矛盾" />
-      <el-table v-else :data="review.findings" stripe>
-        <el-table-column label="风险" width="80">
-          <template #default="scope"><el-tag type="danger">{{ scope.row.risk_level === 'high' ? '高' : '中' }}</el-tag></template>
-        </el-table-column>
-        <el-table-column label="类别" width="100">
-          <template #default="scope">{{ findingCategoryLabels[scope.row.category as keyof typeof findingCategoryLabels] }}</template>
-        </el-table-column>
-        <el-table-column prop="title" label="问题" min-width="170" />
-        <el-table-column prop="description" label="说明" min-width="280" />
-        <el-table-column prop="suggestion" label="整改建议" min-width="280" />
-        <el-table-column label="置信度" width="90">
-          <template #default="scope">{{ Math.round(scope.row.confidence * 100) }}%</template>
-        </el-table-column>
-      </el-table>
-    </el-card>
   </section>
 </template>

@@ -10,6 +10,9 @@ export default createRouter({
     { path: '/', component: HomeView },
     { path: '/reviews', component: HistoryView },
     { path: '/reviews/new', component: NewReviewView },
+    { path: '/reviews/:id', component: () => import('./views/ReviewDetailView.vue') },
+    { path: '/reviews/:id/report', component: () => import('./views/ReviewDetailView.vue') },
     { path: '/workflow', component: WorkflowView },
+    { path: '/evals', component: () => import('./views/EvalsView.vue') },
   ],
 })

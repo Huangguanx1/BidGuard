@@ -11,24 +11,16 @@ from fastapi.responses import JSONResponse
 
 from .config import get_settings
 from .db import Database
-from .model import (
-    REVIEW_PROMPT_VERSION,
-    ModelError,
-    check_model,
-    extract_requirements,
-    match_requirements,
-    review_prompt_hash,
-)
+from .model import ModelError, check_model
 from .parser import ParseError, find_libreoffice, parse_document, validate_file
-from .rules import run_consistency_rules
+from .review_api import create_review_router
+from .evaluations import create_eval_router
 from .schemas import (
     BlockListResponse,
     DocumentSummary,
     HealthResponse,
     ModelCheckResponse,
-    ReviewCreate,
     ReviewHistoryResponse,
-    ReviewRunResponse,
 )
 
 
@@ -45,7 +37,9 @@ uploads_dir = settings.app_data_dir / "uploads"
 uploads_dir.mkdir(parents=True, exist_ok=True)
 database = Database(settings.app_data_dir / "bidguard.db")
 
-app = FastAPI(title="BidGuard AI API", version="0.1.0")
+app = FastAPI(title="BidGuard AI API", version="0.2.0")
+app.include_router(create_review_router(database, settings))
+app.include_router(create_eval_router(database, settings))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -66,11 +60,11 @@ async def handle_api_error(_: Request, exc: ApiError) -> JSONResponse:
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(
-        database="ok" if database.is_healthy() else "ok",
+        database="ok",
         sqlite_fts5=database.has_fts5(),
         libreoffice=find_libreoffice(settings) is not None,
         model_configured=bool(
-            settings.model_base_url and settings.model_api_key and settings.model_name
+            settings.model_base_url and settings.model_name and (settings.model_provider == 'ollama' or settings.model_api_key)
         ),
         model_provider=settings.model_provider,
         model_name=settings.model_name or None,
@@ -87,151 +81,6 @@ def model_check() -> ModelCheckResponse:
         provider=settings.model_provider,
         model=settings.model_name,
         reply=reply,
-    )
-
-
-@app.post("/api/reviews", response_model=ReviewRunResponse, status_code=201)
-def create_review(body: ReviewCreate) -> ReviewRunResponse:
-    if body.tender_document_id == body.bid_document_id:
-        raise ApiError(422, "documents_must_differ", "招标文件和投标文件不能相同")
-    tender = database.get_document(body.tender_document_id)
-    bid = database.get_document(body.bid_document_id)
-    if not tender or not bid:
-        raise ApiError(404, "document_not_found", "招标文件或投标文件不存在")
-
-    review_id = str(uuid4())
-    created_at = datetime.now(UTC).isoformat()
-    review_name = body.name or f"{tender.original_name} / {bid.original_name}"[:100]
-    database.insert_review(
-        {
-            "id": review_id,
-            "name": review_name,
-            "tender_document_id": tender.id,
-            "bid_document_id": bid.id,
-            "model_provider": settings.model_provider,
-            "model_base_url": settings.model_base_url,
-            "model_name": settings.model_name,
-            "prompt_version": REVIEW_PROMPT_VERSION,
-            "prompt_hash": review_prompt_hash(),
-            "model_parameters": json.dumps(
-                {
-                    "temperature": settings.model_temperature,
-                    "batch_chars": settings.model_batch_chars,
-                }
-            ),
-            "created_at": created_at,
-        }
-    )
-    blocks = database.get_all_blocks(tender.id)
-    block_map = {block.id: block for block in blocks}
-    try:
-        drafts, input_tokens, output_tokens = extract_requirements(blocks, settings)
-        requirement_rows = []
-        for draft in drafts:
-            evidence = [block_map[block_id] for block_id in draft.source_block_ids]
-            requirement_rows.append(
-                {
-                    "id": str(uuid4()),
-                    "review_id": review_id,
-                    **draft.model_dump(),
-                    "sort_index": min(block.block_index for block in evidence),
-                    "mandatory": int(draft.mandatory),
-                    "source_block_ids": json.dumps(draft.source_block_ids),
-                    "source_excerpt": "\n".join(block.content for block in evidence)[:1000],
-                }
-            )
-        updated_at = datetime.now(UTC).isoformat()
-        database.complete_requirement_extraction(
-            review_id,
-            requirement_rows,
-            input_tokens,
-            output_tokens,
-            updated_at,
-        )
-        requirements = database.list_requirements(review_id)
-        bid_blocks = database.get_all_blocks(bid.id)
-        matches, match_input_tokens, match_output_tokens = match_requirements(
-            requirements, bid_blocks, settings
-        )
-        requirement_map = {requirement.id: requirement for requirement in requirements}
-        check_rows = []
-        for match in matches:
-            requirement = requirement_map[match.draft.requirement_id]
-            candidate_map = {block.id: block for block in match.candidates}
-            check_rows.append(
-                {
-                    "id": str(uuid4()),
-                    "review_id": review_id,
-                    "requirement_id": requirement.id,
-                    "match_status": match.draft.match_status,
-                    "reason": match.draft.reason,
-                    "tender_evidence": json.dumps(
-                        [
-                            {
-                                "block_id": block_id,
-                                "page_number": block_map[block_id].page_number,
-                                "excerpt": block_map[block_id].content[:500],
-                            }
-                            for block_id in requirement.source_block_ids
-                        ],
-                        ensure_ascii=False,
-                    ),
-                    "bid_evidence": json.dumps(
-                        [
-                            {
-                                "block_id": block_id,
-                                "page_number": candidate_map[block_id].page_number,
-                                "excerpt": candidate_map[block_id].content[:500],
-                            }
-                            for block_id in match.draft.bid_evidence_block_ids
-                        ],
-                        ensure_ascii=False,
-                    ),
-                    "searched_block_ids": json.dumps(
-                        [block.id for block in match.candidates]
-                    ),
-                    "confidence": match.draft.confidence,
-                }
-            )
-        database.complete_requirement_matching(
-            review_id,
-            check_rows,
-            match_input_tokens,
-            match_output_tokens,
-            datetime.now(UTC).isoformat(),
-        )
-        finding_rows = [
-            {
-                "id": str(uuid4()),
-                "review_id": review_id,
-                **finding.model_dump(exclude={"evidence"}),
-                "evidence": json.dumps(
-                    [item.model_dump() for item in finding.evidence], ensure_ascii=False
-                ),
-            }
-            for finding in run_consistency_rules(blocks, bid_blocks)
-        ]
-        database.complete_consistency_check(
-            review_id, finding_rows, datetime.now(UTC).isoformat()
-        )
-    except ModelError as exc:
-        database.fail_review(review_id, str(exc), datetime.now(UTC).isoformat())
-        raise ApiError(502, "review_run_failed", str(exc)) from exc
-    except sqlite3.Error as exc:
-        database.fail_review(review_id, "要求保存失败", datetime.now(UTC).isoformat())
-        raise ApiError(500, "storage_failed", "要求保存失败") from exc
-
-    return ReviewRunResponse(
-        id=review_id,
-        name=review_name,
-        status="awaiting_review",
-        current_stage="consistency_checked",
-        model_name=settings.model_name,
-        input_tokens=input_tokens + match_input_tokens,
-        output_tokens=output_tokens + match_output_tokens,
-        requirements=database.list_requirements(review_id),
-        requirement_checks=database.list_requirement_checks(review_id),
-        findings=database.list_findings(review_id),
     )
 
 
@@ -319,3 +168,11 @@ def get_document_blocks(
     except sqlite3.OperationalError as exc:
         raise ApiError(422, "invalid_search", "检索词无法处理") from exc
     return BlockListResponse(items=items, total=total)
+
+
+@app.get('/api/documents/{document_id}/blocks/{block_id}')
+def get_evidence_block(document_id: str, block_id: str):
+    for block in database.get_all_blocks(document_id):
+        if block.id == block_id:
+            return block
+    raise ApiError(404, 'block_not_found', '证据块不存在')

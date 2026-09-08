@@ -1,5 +1,9 @@
 import hashlib
 import json
+import time
+import socket
+import threading
+from http.client import HTTPException
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
@@ -65,8 +69,31 @@ class RequirementMatchResult:
     candidates: list[DocumentBlock]
 
 
+_MODEL_LOCK = threading.Lock()
+
+
 def _chat(settings: Settings, prompt: str, max_tokens: int) -> ModelReply:
-    if not settings.model_base_url or not settings.model_api_key or not settings.model_name:
+    with _MODEL_LOCK:
+        return _chat_with_retries(settings, prompt, max_tokens)
+
+
+def _chat_with_retries(settings: Settings, prompt: str, max_tokens: int) -> ModelReply:
+    for attempt in range(settings.model_max_retries + 1):
+        try:
+            return _chat_once(settings, prompt, max_tokens)
+        except _TransientModelError:
+            if attempt >= settings.model_max_retries:
+                raise ModelError('模型接口暂时不可用，重试次数已用尽') from None
+            time.sleep(min(2 ** attempt, 4))
+    raise ModelError('模型调用失败')
+
+
+class _TransientModelError(ModelError):
+    pass
+
+
+def _chat_once(settings: Settings, prompt: str, max_tokens: int) -> ModelReply:
+    if not settings.model_base_url or not settings.model_name or (settings.model_provider != 'ollama' and not settings.model_api_key):
         raise ModelError("模型配置不完整，请检查 .env")
 
     request = Request(
@@ -81,7 +108,7 @@ def _chat(settings: Settings, prompt: str, max_tokens: int) -> ModelReply:
             ensure_ascii=False,
         ).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {settings.model_api_key}",
+            "Authorization": f"Bearer {settings.model_api_key or 'ollama'}",
             "Content-Type": "application/json",
         },
         method="POST",
@@ -101,9 +128,11 @@ def _chat(settings: Settings, prompt: str, max_tokens: int) -> ModelReply:
             ),
         )
     except HTTPError as exc:
+        if exc.code == 429 or exc.code >= 500:
+            raise _TransientModelError('模型服务繁忙') from None
         raise ModelError(f"模型接口返回 HTTP {exc.code}") from exc
-    except URLError as exc:
-        raise ModelError("无法连接模型接口") from exc
+    except (URLError, TimeoutError, socket.timeout, HTTPException) as exc:
+        raise _TransientModelError("无法连接模型接口或请求超时") from exc
     except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ModelError("模型接口返回格式不兼容") from exc
 
@@ -129,7 +158,7 @@ def extract_requirements(
                         "id": block.id,
                         "page": block.page_number,
                         "section": block.section_path,
-                        "text": block.content[: max(1000, settings.model_batch_chars)],
+                        "text": block.content,
                     },
                     ensure_ascii=False,
                 )
@@ -137,7 +166,7 @@ def extract_requirements(
             )
         )
         last_error: Exception | None = None
-        for _ in range(max(1, settings.model_max_retries + 1)):
+        for _ in range(2):
             reply = _chat(settings, prompt, 3000)
             input_tokens += reply.input_tokens
             output_tokens += reply.output_tokens
@@ -186,7 +215,7 @@ def match_requirements(
             items="\n".join(_match_item_json(requirement, candidates) for requirement, candidates in batch)
         )
         last_error: Exception | None = None
-        for _ in range(max(1, settings.model_max_retries + 1)):
+        for _ in range(2):
             reply = _chat(settings, prompt, 3000)
             input_tokens += reply.input_tokens
             output_tokens += reply.output_tokens
@@ -195,6 +224,7 @@ def match_requirements(
                 if len(parsed.checks) != len(requirements_by_id):
                     raise ValueError("模型未逐项返回匹配结果")
                 seen: set[str] = set()
+                batch_results = []
                 for draft in parsed.checks:
                     if draft.requirement_id not in requirements_by_id or draft.requirement_id in seen:
                         raise ValueError("模型返回了未知或重复的要求 ID")
@@ -215,12 +245,13 @@ def match_requirements(
                         raise ValueError("匹配状态缺少投标证据")
                     if draft.match_status == "not_found" and draft.bid_evidence_block_ids:
                         raise ValueError("未找到状态不应包含投标证据")
-                    results.append(
+                    batch_results.append(
                         RequirementMatchResult(
                             draft=draft,
                             candidates=candidates_by_id[draft.requirement_id],
                         )
                     )
+                results.extend(batch_results)
                 break
             except (ValidationError, ValueError, json.JSONDecodeError) as exc:
                 last_error = exc
@@ -243,6 +274,8 @@ def _batch_blocks(
     current_chars = 0
     for block in blocks:
         block_chars = len(block.content) + 200
+        if block_chars > max_chars:
+            raise ModelError('单个文档块超过模型批次上限，请提高 MODEL_BATCH_CHARS 或拆分文档')
         if current and current_chars + block_chars > max(1000, max_chars):
             batches.append(current)
             current = []
@@ -297,7 +330,7 @@ def _match_item_json(
                 {
                     "id": block.id,
                     "page": block.page_number,
-                    "text": block.content[:1500],
+                    "text": block.content,
                 }
                 for block in candidates
             ],
@@ -314,6 +347,8 @@ def _batch_matches(
     current_chars = 0
     for item in prepared:
         item_chars = len(_match_item_json(*item))
+        if item_chars > max_chars:
+            raise ModelError('单项要求候选上下文超过模型批次上限，请提高 MODEL_BATCH_CHARS')
         if current and current_chars + item_chars > max(1000, max_chars):
             batches.append(current)
             current = []
