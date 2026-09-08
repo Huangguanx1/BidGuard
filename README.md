@@ -17,20 +17,22 @@
 - 所有待处理问题完成复核后冻结结果，下载 Word（DOCX）和 JSON 报告；冻结后禁止修改。
 - 六组固定虚构评测案例，保存整体指标、严重漏检和逐案例失败原因。
 
-不包含 OCR、多租户、Redis、Celery、微服务、云部署和无意义的多智能体包装。
-
 ## 技术架构
 
-```text
-Vue 3 + Element Plus
-        │ HTTP
-        ▼
-FastAPI + Pydantic
-        ├── DOCX：python-docx + LibreOffice 页码转换
-        ├── PDF：PyMuPDF
-        ├── OpenAI Compatible API：结构化要求提取
-        ├── Python 规则：金额、日期、项目名称、工期
-        └── SQLite + FTS5：文档、审查、要求与发现
+```mermaid
+flowchart LR
+    U[用户] --> FE[Vue 3 + TypeScript<br/>Element Plus]
+    FE -->|HTTP API| API[FastAPI + Pydantic]
+    API --> PARSER[文档解析<br/>PyMuPDF / python-docx / LibreOffice]
+    API --> WF[LangGraph 审查工作流]
+    WF --> SEARCH[SQLite FTS5<br/>候选证据检索]
+    WF --> LLM[OpenAI Compatible API<br/>要求提取与逐项匹配]
+    WF --> RULES[Python 确定性规则<br/>金额 / 日期 / 项目名称 / 工期]
+    PARSER --> DB[(SQLite)]
+    SEARCH --> DB
+    WF --> DB
+    DB --> REVIEW[人工复核与结果冻结]
+    REVIEW --> REPORT[DOCX / JSON 报告]
 ```
 
 ## 受控工作流
@@ -110,17 +112,34 @@ npm run dev
 
 Ollama 使用其 OpenAI Compatible `/v1` 接口，将 `MODEL_PROVIDER=ollama`、`MODEL_BASE_URL=http://127.0.0.1:11434/v1`、`MODEL_NAME` 设为本机已下载模型，API Key 可留空。当前调用串行执行；超时、429 和 5xx 最多重试两次，结构校验失败最多重试一次。超出批次上限的块会明确失败，请拆分文档或调整 `MODEL_BATCH_CHARS`，不会静默截断。
 
-## 样本、截图与评测
+## 界面截图
+
+### 审查工作台
+
+![审查工作台](docs/screenshots/workbench.png)
+
+### 质量评测
+
+![质量评测](docs/screenshots/evals.png)
+
+## 样本与评测
 
 `samples/` 仅包含脚本生成的虚构数据，不代表真实公司或真实项目。
 
-- [工作台真实运行截图](docs/screenshots/workbench.png)
-- [评测真实运行截图](docs/screenshots/evals.png)
 - [固定评测数据](evals/cases.jsonl) 与 [实际基线记录](evals/baseline-2026-09-04.json)。
 
 2026-09-04 使用 `gpt-5.4`、temperature 0.7 的六组文本块评测：案例通过率 66.7%，一致性精确率/召回率 100%，标注要求召回率 100%，匹配 Macro-F1 53.3%，结构化输出与证据校验案例通过率均为 100%。匹配未达到方案中的 75% 目标。`partial_materials` 预期部分满足、实际聚合为不确定；`scoring_uncertain` 预期不确定、实际未找到。未隐藏失败案例。
 
 这些结果仅针对小型虚构文本块集合，不代表真实业务准确率。要求召回按源块和类别计算，原子要求拆分与整条标注不一致会影响匹配评分；页码准确率未在该集合中评测，界面显示“未评测”。未配置供应商单价，成本留空；失败请求的供应商用量可能未计入。PDF/DOCX 解析由独立接口冒烟验证。
+
+## 已知限制
+
+- 当前是本地单用户 MVP，仅支持单个后端进程，不适用于多用户或高并发生产环境。
+- 支持 DOCX 和文本型 PDF；暂不支持扫描件 OCR、加密 PDF 及复杂跨页表格的完整还原。
+- 候选证据使用 SQLite FTS5 关键词检索，尚未加入向量检索与 rerank，同义表达可能漏召回。
+- 固定评测集仅有六组虚构案例，不能代表真实招投标文件上的准确率；当前匹配 Macro-F1 为 53.3%，所有结论仍需人工复核。
+- 使用远程模型时，候选文档片段会发送给所配置的模型服务；敏感文件应使用获准服务或本地 Ollama。
+- 当前未提供用户体系、RBAC、对象存储、任务队列、容器化部署、监控告警及审计日志。
 
 ## 免责声明
 
